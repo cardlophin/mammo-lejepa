@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+# Datos VinDr-Mammo: CSV de anotaciones, DICOM, PNG y catálogo derivados.
+# Constitución ("Restricciones del dominio"): datos clínicos bajo licencia
+# PhysioNet, "data/" queda fuera del control de versiones por completo.
+data/
+*.part
