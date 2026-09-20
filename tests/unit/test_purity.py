@@ -7,14 +7,15 @@ import pytest
 
 PURE_MODULES = [
     "manifest",
-    "windowing",
+    "boxing",
     "segmentation",
     "geometry",
-    "findings",
+    "splits",
+    "quality",
     "resume",
 ]
 
-FORBIDDEN_IMPORTS = {"aiohttp", "requests", "pydicom", "os", "pathlib"}
+FORBIDDEN_IMPORTS = {"os", "pathlib"}
 
 SRC_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "mammo_lejepa"
 

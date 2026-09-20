@@ -1,123 +1,137 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 
 import polars as pl
 
-from mammo_lejepa.models import ImageTask
+from mammo_lejepa.models import ImagenMammoBench
 
-REQUIRED_ANNOTATION_COLUMNS: frozenset[str] = frozenset(
+REQUIRED_COLUMNS: frozenset[str] = frozenset(
     {
-        "study_id",
-        "series_id",
-        "image_id",
+        "source_dataset",
+        "preprocessed_image_path",
+        "mask_path",
+        "raw_image_path",
         "laterality",
-        "view_position",
-        "height",
-        "width",
-        "breast_birads",
-        "breast_density",
-        "split",
+        "view",
+        "source_subjectID",
+        "classification",
+        "density",
+        "BIRADS",
+        "abnormality",
+        "molecular_subtype",
+        "subject_age",
     }
 )
 
 
 def build_manifest(
-    annotations: pl.DataFrame,
+    catalog_csv: pl.DataFrame,
     *,
-    split: str | None = None,
-    study_ids: Sequence[str] | None = None,
-    n_studies: int | None = None,
-) -> pl.DataFrame:
-    """Construye el manifiesto de trabajo a partir de `breast-level_annotations`
-    (FR-001), acotado por split, lista de estudios y número de estudios
-    (FR-002). Devuelve pares `(study_id, image_id)` únicos y ordenados de forma
-    determinista; `n_studies` selecciona siempre los primeros del orden, nunca
-    una muestra aleatoria sin semilla."""
-    missing_columns = REQUIRED_ANNOTATION_COLUMNS - set(annotations.columns)
+    sources: Sequence[str] | None = None,
+    limit: int | None = None,
+    image_ids: Sequence[str] | None = None,
+) -> list[ImagenMammoBench]:
+    """Construye el manifiesto de trabajo desde `mammo-bench.csv` (FR-004).
+    Normaliza cadenas vacías a `None`, deriva `image_id` (del nombre de
+    fichero de `preprocessed_image_path`, sin extensión) y `patient_key`
+    (`f"{source_dataset}:{source_subject_id}"`), y produce un orden
+    determinista (por `source_dataset` y `preprocessed_image_path`). Acota
+    por fuente, por lista explícita de `image_id` y por número de imágenes
+    (FR-005). Lanza `ValueError` nombrando la columna, fuente o `image_id`
+    ausente."""
+    missing_columns = REQUIRED_COLUMNS - set(catalog_csv.columns)
     if missing_columns:
         raise ValueError(
-            "Faltan columnas requeridas en breast-level_annotations.csv: "
-            f"{sorted(missing_columns)}"
+            f"Faltan columnas requeridas en mammo-bench.csv: {sorted(missing_columns)}"
         )
 
-    filtered = annotations
+    filtered = catalog_csv
 
-    if split is not None:
-        available_splits = filtered.get_column("split").unique().to_list()
-        if split not in available_splits:
+    if sources is not None:
+        requested_sources = set(sources)
+        available_sources = set(filtered.get_column("source_dataset").unique())
+        missing_sources = requested_sources - available_sources
+        if missing_sources:
             raise ValueError(
-                f"El split {split!r} no existe. Splits disponibles: "
-                f"{sorted(available_splits)}"
+                f"Fuentes solicitadas no encontradas: {sorted(missing_sources)}"
             )
-        filtered = filtered.filter(pl.col("split") == split)
+        filtered = filtered.filter(
+            pl.col("source_dataset").is_in(list(requested_sources))
+        )
 
-    if study_ids is not None:
-        requested = set(study_ids)
-        available = set(filtered.get_column("study_id").to_list())
-        missing_studies = requested - available
-        if missing_studies:
+    ordered = filtered.sort(["source_dataset", "preprocessed_image_path"])
+    manifest = [_row_to_image(row) for row in ordered.iter_rows(named=True)]
+
+    if image_ids is not None:
+        requested_ids = set(image_ids)
+        available_ids = {image.image_id for image in manifest}
+        missing_ids = requested_ids - available_ids
+        if missing_ids:
             raise ValueError(
-                f"study_id solicitados no encontrados: {sorted(missing_studies)}"
+                f"image_id solicitados no encontrados: {sorted(missing_ids)}"
             )
-        filtered = filtered.filter(pl.col("study_id").is_in(list(requested)))
+        manifest = [image for image in manifest if image.image_id in requested_ids]
 
-    study_order = filtered.select("study_id").unique().sort("study_id")
-
-    if study_order.is_empty():
-        raise ValueError("No hay ningún estudio que cumpla los filtros solicitados.")
-
-    if n_studies is not None:
-        study_order = study_order.head(n_studies)
-
-    manifest = filtered.join(study_order, on="study_id", how="inner").sort(
-        ["study_id", "image_id"]
-    )
+    if limit is not None:
+        manifest = manifest[:limit]
 
     return manifest
 
 
-def batch_by_study(manifest: pl.DataFrame) -> list[list[ImageTask]]:
-    """Agrupa el manifiesto en lotes por estudio, sin asumir un número fijo de
-    imágenes por estudio (FR-003). Respeta el orden determinista de
-    `build_manifest`."""
-    batches: list[list[ImageTask]] = []
+def missing_files(
+    manifest: Sequence[ImagenMammoBench],
+    existing: Container[str],
+) -> list[tuple[ImagenMammoBench, str]]:
+    """Verifica, sin tocar el disco, qué imágenes del manifiesto no tienen su
+    fichero preprocesado en `existing` (el conjunto de rutas existentes,
+    calculado por el llamador). Devuelve pares `(imagen, qué falta)`
+    (FR-006)."""
+    problems: list[tuple[ImagenMammoBench, str]] = []
 
-    for _, group in manifest.group_by("study_id", maintain_order=True):
-        tasks = [
-            ImageTask(
-                study_id=row["study_id"],
-                series_id=row["series_id"],
-                image_id=row["image_id"],
-                split=row["split"],
-                laterality=row["laterality"],
-                view_position=row["view_position"],
-                breast_birads=row["breast_birads"],
-                breast_density=row["breast_density"],
-                expected_height=int(row["height"]),
-                expected_width=int(row["width"]),
-            )
-            for row in group.sort("image_id").iter_rows(named=True)
-        ]
-        batches.append(tasks)
+    for image in manifest:
+        if image.preprocessed_path not in existing:
+            problems.append((image, f"falta preprocessed: {image.preprocessed_path}"))
 
-    return batches
+    return problems
 
 
-def count_metadata_discrepancies(
-    metadata: pl.DataFrame,
-    annotations: pl.DataFrame,
-) -> tuple[int, int]:
-    """FR-032: compara el `image_id` de `annotations`
-    (`breast-level_annotations.csv`) contra el `SOP Instance UID` de `metadata`
-    (`metadata.csv`) —ambos identifican la misma imagen bajo un nombre de
-    columna distinto—, y devuelve el recuento de discrepancias en cada sentido
-    `(only_in_metadata, only_in_annotations)`. No lanza excepción y no
-    modifica el manifiesto."""
-    metadata_ids = set(metadata.get_column("SOP Instance UID").to_list())
-    annotation_ids = set(annotations.get_column("image_id").to_list())
+def _row_to_image(row: dict[str, str | None]) -> ImagenMammoBench:
+    source_dataset = row["source_dataset"] or ""
+    source_subject_id = row["source_subjectID"] or ""
+    preprocessed_path = row["preprocessed_image_path"] or ""
+    image_id = _stem(preprocessed_path)
 
-    only_in_metadata = len(metadata_ids - annotation_ids)
-    only_in_annotations = len(annotation_ids - metadata_ids)
+    return ImagenMammoBench(
+        image_id=image_id,
+        source_dataset=source_dataset,
+        source_subject_id=source_subject_id,
+        patient_key=f"{source_dataset}:{source_subject_id}",
+        preprocessed_path=preprocessed_path,
+        mask_path=row["mask_path"] or "",
+        raw_path=row["raw_image_path"] or "",
+        laterality=row["laterality"] or "",
+        view=row["view"] or "",
+        classification=row["classification"] or "",
+        density=_normalize_empty(row["density"]),
+        birads=_normalize_empty(row["BIRADS"]),
+        abnormality=_normalize_empty(row["abnormality"]),
+        molecular_subtype=_normalize_empty(row["molecular_subtype"]),
+        subject_age=_normalize_empty(row["subject_age"]),
+    )
 
-    return only_in_metadata, only_in_annotations
+
+def _stem(path: str) -> str:
+    """Nombre de fichero sin directorio ni extensión, con operaciones de
+    cadena puras (sin `pathlib`, prohibido en un módulo puro)."""
+    filename = path.rsplit("/", 1)[-1]
+    return filename.rsplit(".", 1)[0] if "." in filename else filename
+
+
+def _normalize_empty(value: str | None) -> str | None:
+    """Las etiquetas ausentes vienen como cadena vacía en el CSV; `None`
+    significa explícitamente "no anotado", nunca se confunde con un valor
+    (data-model.md, notas sobre la fuente)."""
+    if value is None or value == "":
+        return None
+    return value

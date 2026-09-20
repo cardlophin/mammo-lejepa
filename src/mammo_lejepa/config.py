@@ -1,144 +1,69 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
-@dataclass(frozen=True, slots=True)
-class PhysioNetCredentials:
-    username: str
-    password: str
-    session_id: str
-
-
-def load_credentials() -> PhysioNetCredentials:
-    """Carga las credenciales de PhysioNet desde `.env` y el entorno. Los
-    mensajes de error nombran la variable ausente pero nunca revelan valores
-    (FR-031)."""
-    from dotenv import load_dotenv
-    from physionet.api.utils import get_credentials_from_env
-
-    load_dotenv()
-
-    username, password = get_credentials_from_env()
-    session_id = os.getenv("PHYSIONET_SESSIONID")
-
-    if not username:
-        raise RuntimeError(
-            "PHYSIONET_USERNAME no está disponible. Comprueba tu archivo .env."
-        )
-    if not password:
-        raise RuntimeError(
-            "PHYSIONET_PASSWORD no está disponible. Comprueba tu archivo .env."
-        )
-    if not session_id:
-        raise RuntimeError(
-            "PHYSIONET_SESSIONID no está disponible. Copia la cookie sessionid "
-            "de PhysioNet desde tu navegador y guárdala en .env."
-        )
-
-    return PhysioNetCredentials(
-        username=username, password=password, session_id=session_id
-    )
+from mammo_lejepa.models import BoxingParams, QualityParams
 
 
 @dataclass(frozen=True, slots=True)
-class PipelineConfig:
-    """Configuración efectiva de una ejecución. Se construye a partir de la CLI
-    y del entorno; ninguna constante de comportamiento se edita en el código
-    fuente (constitución, principio II)."""
+class CorpusConfig:
+    """Configuración efectiva de una ejecución. Se construye a partir de la
+    CLI; ninguna constante de comportamiento se edita en el código fuente
+    (constitución, principio II)."""
 
-    data_dir: Path = field(default_factory=lambda: Path("data/vindr-mammo"))
+    mammobench_root: Path = field(default_factory=lambda: Path("data/Mammo_Bench_v2"))
+    output_dir: Path = field(default_factory=lambda: Path("data/corpus"))
 
-    # Concurrencia (D-03)
-    downloads: int = 6
-    workers: int = 4
-    queue_size: int = 12
+    workers: int = 8
+    seed: int = 0
+    ratios: tuple[float, float, float] = (0.8, 0.1, 0.1)
 
-    # Segmentación y normalización
-    margin_px: int = 25
-    low_percentile: float = 0.5
-    high_percentile: float = 99.5
-    blur_kernel: int = 5
-    close_kernel_ratio: float = 0.006
-
-    # PhysioNet
-    base_url: str = "https://physionet.org"
-    dataset_name: str = "vindr-mammo"
-    dataset_version: str = "1.0.0"
-    connect_timeout_seconds: float = 20.0
-    read_timeout_seconds: float = 300.0
-    total_timeout_seconds: float = 600.0
-    max_retries: int = 5
-    backoff_factor: float = 1.5
-
-    # D-03: máximo DICOM observado en el dataset (~35 MB)
-    max_dicom_bytes_estimate: int = 35 * 1024 * 1024
+    boxing: BoxingParams = field(default_factory=BoxingParams)
+    quality: QualityParams = field(default_factory=QualityParams)
 
     @property
-    def csv_dir(self) -> Path:
-        return self.data_dir / "csv"
+    def csv_path(self) -> Path:
+        return self.mammobench_root / "CSV_Files" / "mammo-bench.csv"
 
     @property
-    def breast_level_annotations_path(self) -> Path:
-        return self.csv_dir / "breast-level_annotations.csv"
+    def crops_dir(self) -> Path:
+        return self.output_dir / "crops"
+
+    def crop_path(self, source_dataset: str, image_id: str) -> Path:
+        return self.crops_dir / source_dataset / f"{image_id}.png"
 
     @property
-    def finding_annotations_path(self) -> Path:
-        return self.csv_dir / "finding_annotations.csv"
+    def records_jsonl_path(self) -> Path:
+        return self.output_dir / "records.jsonl"
 
     @property
-    def metadata_path(self) -> Path:
-        return self.csv_dir / "metadata.csv"
+    def catalog_parquet_path(self) -> Path:
+        return self.output_dir / "catalog.parquet"
 
     @property
-    def dicom_dir(self) -> Path:
-        return self.data_dir / "images" / "dicom"
-
-    @property
-    def quarantine_dir(self) -> Path:
-        return self.data_dir / "images" / "quarantine"
-
-    @property
-    def processed_dir(self) -> Path:
-        return self.data_dir / "images" / "processed"
-
-    @property
-    def catalog_dir(self) -> Path:
-        return self.data_dir / "catalog"
-
-    @property
-    def images_jsonl_path(self) -> Path:
-        return self.catalog_dir / "images.jsonl"
-
-    @property
-    def images_parquet_path(self) -> Path:
-        return self.catalog_dir / "images.parquet"
-
-    @property
-    def findings_parquet_path(self) -> Path:
-        return self.catalog_dir / "findings.parquet"
+    def splits_parquet_path(self) -> Path:
+        return self.output_dir / "splits.parquet"
 
     @property
     def runs_jsonl_path(self) -> Path:
-        return self.catalog_dir / "runs.jsonl"
+        return self.output_dir / "runs.jsonl"
 
     @property
-    def files_base_url(self) -> str:
-        return f"{self.base_url}/files/{self.dataset_name}/{self.dataset_version}"
+    def qc_dir(self) -> Path:
+        return self.output_dir / "qc"
 
     @property
-    def content_url(self) -> str:
-        return f"{self.base_url}/content/{self.dataset_name}/{self.dataset_version}/"
-
-    def dicom_url(self, study_id: str, image_id: str) -> str:
-        return f"{self.files_base_url}/images/{study_id}/{image_id}.dicom"
+    def quality_report_path(self) -> Path:
+        return self.qc_dir / "quality_report.md"
 
     @property
-    def disk_ceiling_bytes(self) -> int:
-        """D-03: el disco intermedio máximo es una función conocida de los
-        parámetros de concurrencia, no del tamaño del dataset (constitución,
-        principio IV)."""
-        in_flight = self.downloads + self.queue_size + self.workers
-        return in_flight * self.max_dicom_bytes_estimate
+    def quality_by_source_path(self) -> Path:
+        return self.qc_dir / "quality_by_source.parquet"
+
+    @property
+    def findings_path(self) -> Path:
+        return self.qc_dir / "findings.md"
+
+    def grid_path(self, source_dataset: str) -> Path:
+        return self.qc_dir / f"grid_{source_dataset}.png"

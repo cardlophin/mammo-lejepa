@@ -4,7 +4,12 @@
 
 **Created**: 2026-09-14
 
-**Status**: Ready for planning
+**Status**: Superseded by `002-mammobench-corpus` (2026-09-15)
+
+> Implementada por completo, pero retirada: el proyecto cambia de origen de datos
+> y pasa a operar sobre el corpus local Mammo-Bench. Se conserva como registro de
+> la decisión y de su alcance. La retirada del código está detallada en
+> `specs/002-mammobench-corpus/migration.md`.
 
 **Input**: Extraer las 20.000 imágenes de VinDr-Mammo (PhysioNet v1.0.0, ~300 GB de
 DICOM) sin materializar el dataset completo en disco: descargar de forma asíncrona,
@@ -210,6 +215,14 @@ error, y que `mammo-etl retry --failed` lo vuelve a intentar.
   `breast-level_annotations.csv` —ambos identifican la misma imagen—, registrar el
   recuento de discrepancias como aviso (imágenes presentes en uno y ausentes en el
   otro) y continuar la ejecución sin abortar por esta causa.
+- **FR-033**: Cuando `run` acota el trabajo por `--n-studies` (o abarca el dataset
+  completo) sin lista explícita de `--study-id`, el sistema DEBE excluir de la
+  selección los estudios cuyas imágenes estén todas ya resueltas con éxito
+  (verificado igual que en FR-027: registro `ok` y PNG existente), de modo que
+  invocaciones sucesivas con los mismos parámetros avancen sobre estudios nuevos en
+  lugar de repetir siempre los primeros `n_studies` en orden alfabético. Una lista
+  explícita de `--study-id` nunca se filtra así: pedir un estudio explícitamente
+  siempre lo reprocesa.
 
 ### Descarga
 

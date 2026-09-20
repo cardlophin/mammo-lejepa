@@ -3,96 +3,110 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from mammo_lejepa.manifest import (
-    batch_by_study,
-    build_manifest,
-    count_metadata_discrepancies,
-)
+from mammo_lejepa.manifest import build_manifest, missing_files
 
 
-def test_build_manifest_returns_unique_pairs_in_deterministic_order(
-    sample_annotations: pl.DataFrame,
+def test_build_manifest_produces_one_entry_per_row(
+    sample_mammo_bench_csv: pl.DataFrame,
 ) -> None:
-    manifest = build_manifest(sample_annotations)
+    manifest = build_manifest(sample_mammo_bench_csv)
 
-    assert manifest.select("study_id", "image_id").is_duplicated().sum() == 0
-    assert manifest.get_column("study_id").to_list() == [
-        "study_a",
-        "study_a",
-        "study_b",
-        "study_b",
-    ]
+    assert len(manifest) == sample_mammo_bench_csv.height
 
 
-def test_build_manifest_n_studies_selects_first_in_order(
-    sample_annotations: pl.DataFrame,
+def test_build_manifest_normalizes_empty_strings_to_none(
+    sample_mammo_bench_csv: pl.DataFrame,
 ) -> None:
-    manifest = build_manifest(sample_annotations, n_studies=1)
+    manifest = build_manifest(sample_mammo_bench_csv)
 
-    assert manifest.get_column("study_id").unique().to_list() == ["study_a"]
+    # La primera fila de la fixture no trae density/BIRADS/abnormality/etc.
+    normal_row = next(img for img in manifest if img.image_id == "inbreast_0")
+    assert normal_row.birads is None
+    assert normal_row.abnormality is None
+    assert normal_row.molecular_subtype is None
+    assert normal_row.subject_age is None
+    assert normal_row.density == "DENSITY B"  # ésta sí viene rellena
 
 
-def test_build_manifest_missing_split_raises(sample_annotations: pl.DataFrame) -> None:
-    with pytest.raises(ValueError, match="nonexistent"):
-        build_manifest(sample_annotations, split="nonexistent")
-
-
-def test_build_manifest_missing_columns_names_them(
-    sample_annotations: pl.DataFrame,
+def test_build_manifest_derives_patient_key(
+    sample_mammo_bench_csv: pl.DataFrame,
 ) -> None:
-    incomplete = sample_annotations.drop("breast_birads")
+    manifest = build_manifest(sample_mammo_bench_csv)
 
-    with pytest.raises(ValueError, match="breast_birads"):
+    image = next(img for img in manifest if img.image_id == "inbreast_0")
+    assert image.patient_key == "inbreast:20586908"
+
+
+def test_build_manifest_derives_image_id_from_filename(
+    sample_mammo_bench_csv: pl.DataFrame,
+) -> None:
+    manifest = build_manifest(sample_mammo_bench_csv)
+
+    image_ids = {img.image_id for img in manifest}
+    assert "inbreast_0" in image_ids
+    assert "ddsm_0" in image_ids
+    assert "dmid_0" in image_ids
+
+
+def test_build_manifest_missing_column_names_it(
+    sample_mammo_bench_csv: pl.DataFrame,
+) -> None:
+    incomplete = sample_mammo_bench_csv.drop("mask_path")
+
+    with pytest.raises(ValueError, match="mask_path"):
         build_manifest(incomplete)
 
 
-def test_batch_by_study_does_not_assume_four_images(
-    sample_annotations: pl.DataFrame,
+def test_build_manifest_filters_by_source_deterministically(
+    sample_mammo_bench_csv: pl.DataFrame,
 ) -> None:
-    three_images = sample_annotations.head(3)  # study_a completo + 1 de study_b
-    manifest = build_manifest(three_images)
+    manifest = build_manifest(sample_mammo_bench_csv, sources=["ddsm"])
 
-    batches = batch_by_study(manifest)
-
-    assert sorted(len(b) for b in batches) == [1, 2]
-    assert all(
-        task.study_id == batch[0].study_id for batch in batches for task in batch
+    assert {img.source_dataset for img in manifest} == {"ddsm"}
+    assert [img.image_id for img in manifest] == sorted(
+        img.image_id for img in manifest
     )
 
 
-def test_count_metadata_discrepancies_matching_ids_are_zero(
-    sample_annotations: pl.DataFrame, sample_metadata: pl.DataFrame
+def test_build_manifest_unknown_source_raises(
+    sample_mammo_bench_csv: pl.DataFrame,
 ) -> None:
-    only_in_metadata, only_in_annotations = count_metadata_discrepancies(
-        sample_metadata, sample_annotations
-    )
-
-    assert (only_in_metadata, only_in_annotations) == (0, 0)
+    with pytest.raises(ValueError, match="nonexistent"):
+        build_manifest(sample_mammo_bench_csv, sources=["nonexistent"])
 
 
-def test_count_metadata_discrepancies_counts_each_direction(
-    sample_annotations: pl.DataFrame, sample_metadata: pl.DataFrame
+def test_build_manifest_limit_is_deterministic(
+    sample_mammo_bench_csv: pl.DataFrame,
 ) -> None:
-    metadata_with_extra = pl.concat(
-        [sample_metadata, pl.DataFrame({"SOP Instance UID": ["orphan_in_metadata"]})]
-    )
-    annotations_missing_one = sample_annotations.filter(
-        pl.col("image_id") != "image_b_r"
-    )
+    first = build_manifest(sample_mammo_bench_csv, limit=2)
+    second = build_manifest(sample_mammo_bench_csv, limit=2)
 
-    only_in_metadata, only_in_annotations = count_metadata_discrepancies(
-        metadata_with_extra, annotations_missing_one
-    )
-
-    assert only_in_metadata == 2  # orphan_in_metadata + image_b_r
-    assert only_in_annotations == 0
+    assert [img.image_id for img in first] == [img.image_id for img in second]
+    assert len(first) == 2
 
 
-def test_count_metadata_discrepancies_does_not_alter_manifest(
-    sample_annotations: pl.DataFrame, sample_metadata: pl.DataFrame
+def test_build_manifest_explicit_image_ids(
+    sample_mammo_bench_csv: pl.DataFrame,
 ) -> None:
-    before = build_manifest(sample_annotations)
-    count_metadata_discrepancies(sample_metadata, sample_annotations)
-    after = build_manifest(sample_annotations)
+    manifest = build_manifest(sample_mammo_bench_csv, image_ids=["ddsm_0"])
 
-    assert before.equals(after)
+    assert [img.image_id for img in manifest] == ["ddsm_0"]
+
+
+def test_build_manifest_unknown_image_id_raises(
+    sample_mammo_bench_csv: pl.DataFrame,
+) -> None:
+    with pytest.raises(ValueError, match="nope"):
+        build_manifest(sample_mammo_bench_csv, image_ids=["nope"])
+
+
+def test_missing_files_reports_absent_preprocessed_images(
+    sample_mammo_bench_csv: pl.DataFrame,
+) -> None:
+    manifest = build_manifest(sample_mammo_bench_csv)
+    existing = {img.preprocessed_path for img in manifest[1:]}  # falta la primera
+
+    problems = missing_files(manifest, existing)
+
+    assert len(problems) == 1
+    assert problems[0][0].image_id == manifest[0].image_id

@@ -303,14 +303,33 @@ sin volver a recorrer el dataset.
   suite en verde.
 - [ ] T058 Ejecución de validación real sobre 50 estudios: medir el pico de disco, la
   tasa de fallos y el rendimiento frente a `design/b.py`, y contrastar con SC-002,
-  SC-005 y SC-008. **No ejecutado en esta sesión**: el ancho de banda disponible
-  hace inviable descargar 50 estudios (~1.5–2 GB) en el tiempo de la sesión —
-  1 estudio real (4 imágenes, ~40 MB) tardó varios minutos. Pendiente de ejecución
-  manual por el usuario con `mammo-etl run --n-studies 50 --split training`.
+  SC-005 y SC-008. **Parcialmente cubierto**: el usuario ejecutó
+  `mammo-etl run --n-studies 5 --split training` dos veces de forma independiente
+  (20 imágenes reales cada vez, 0 fallos, 394.9 MB descargados / 22.8 MB escritos ⇒
+  5.8 % — cumple SC-003). Sigue pendiente la escala de 50 estudios: el ancho de
+  banda de esta sesión (~50–150 KB/s) lo hace inviable en el tiempo disponible.
+  Pendiente de ejecución manual por el usuario con
+  `mammo-etl run --n-studies 50 --split training`.
 - [X] T059 Registrar en `research.md` la `TransferSyntaxUID` observada (cierre del
   punto *a verificar* de D-01) y revisar la distribución de `crop_area_ratio` en
   busca de cajas infladas (D-06). Hecho sobre la muestra real de 4 imágenes
   disponible en esta sesión; repetir con la muestra de T058 cuando se ejecute.
+
+## Correcciones post-implementación
+
+- [X] T060 **FR-033** (reportado por el usuario tras usar la herramienta):
+  `run --n-studies N` invocado varias veces sin `--study-id` explícito
+  reseleccionaba siempre los mismos primeros `N` estudios en orden alfabético
+  —confirmado revisando `runs.jsonl` y los `manifest_<run_id>.parquet`
+  persistidos: tres ejecuciones de `--n-studies 5` produjeron el mismo
+  manifiesto de 5 estudios—, en vez de avanzar sobre estudios nuevos. Añadida
+  `exclude_completed_studies` (pura) en `manifest.py`, con test en
+  `tests/unit/test_manifest.py`, y conectada en `cli.py run`: sin
+  `--study-id`, excluye del CSV de anotaciones los estudios cuyas imágenes
+  están todas ya resueltas con éxito antes de aplicar `--n-studies`/split.
+  Verificado además contra el dataset y catálogo reales de esta sesión: tras
+  excluir los 5 estudios ya completados, `--n-studies 5` selecciona 5 estudios
+  nuevos sin solape.
 
 ---
 
@@ -357,7 +376,7 @@ sin volver a recorrer el dataset.
 | FR-014 | T009, T026 | FR-030 | T049, T051 |
 | FR-015 | T017, T022, T059 | FR-031 | T008, T053 |
 | FR-016 | T027, T033 | | |
-| FR-032 | T019, T024, T028 | | |
+| FR-032 | T019, T024, T028 | FR-033 | T060 |
 
 ## Trazabilidad criterio de éxito → verificación
 
