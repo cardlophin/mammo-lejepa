@@ -3,7 +3,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -14,7 +13,7 @@ import cv2
 import numpy as np
 
 from mammo_lejepa.errors import WriteError
-from mammo_lejepa.models import ImageRecord, RunSummary
+from mammo_lejepa.models import RegistroDeRecorte, RunSummary
 
 _LOCK_FILE_NAME = ".run.lock"
 
@@ -65,10 +64,10 @@ def _append_json_line(payload: object, jsonl_path: Path) -> None:
         os.fsync(handle.fileno())
 
 
-def append_record(record: ImageRecord, jsonl_path: Path) -> None:
+def append_record(record: RegistroDeRecorte, jsonl_path: Path) -> None:
     """Escribe una única línea JSONL con `record` y vacía el búfer del sistema
     operativo antes de retornar: cuando la llamada retorna, el registro es
-    duradero (FR-020)."""
+    duradero (FR-013)."""
     _append_json_line(record, jsonl_path)
 
 
@@ -106,16 +105,6 @@ def acquire_output_lock(directory: Path) -> Iterator[None]:
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
-
-
-def quarantine(dicom_path: Path, quarantine_dir: Path) -> Path:
-    """Mueve un DICOM cuyo procesado falló a `quarantine_dir/<study_id>/`,
-    preservando el nombre de su directorio de estudio (FR-018)."""
-    study_dir = quarantine_dir / dicom_path.parent.name
-    study_dir.mkdir(parents=True, exist_ok=True)
-    destination = study_dir / dicom_path.name
-    shutil.move(str(dicom_path), str(destination))
-    return destination
 
 
 def clean_orphan_part_files(directory: Path) -> int:

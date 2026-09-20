@@ -2,86 +2,86 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import Literal
 
 import numpy as np
 
 
 class FailureCategory(StrEnum):
-    NETWORK = "NETWORK"
-    AUTH = "AUTH"
     DECODE = "DECODE"
     SEGMENTATION = "SEGMENTATION"
     WRITE = "WRITE"
     UNKNOWN = "UNKNOWN"
 
 
-@dataclass(frozen=True, slots=True)
-class ImageTask:
-    """La unidad de trabajo. Se deriva del manifiesto y no cambia durante la
-    ejecución."""
+class BoxSource(StrEnum):
+    MASK = "MASK"
+    OTSU = "OTSU"
 
-    study_id: str
-    series_id: str
+
+class FallbackReason(StrEnum):
+    MISSING_MASK = "MISSING_MASK"
+    EMPTY_MASK = "EMPTY_MASK"
+    SATURATED_MASK = "SATURATED_MASK"
+    DEGENERATE_BOX = "DEGENERATE_BOX"
+
+
+@dataclass(frozen=True, slots=True)
+class ImagenMammoBench:
+    """Una fila de `mammo-bench.csv`. Inmutable, es la unidad de trabajo."""
+
     image_id: str
-    split: str
+    source_dataset: str
+    source_subject_id: str
+    patient_key: str
+    preprocessed_path: str
+    mask_path: str
+    raw_path: str
     laterality: str
-    view_position: str
-    breast_birads: str
-    breast_density: str
-    expected_height: int
-    expected_width: int
+    view: str
+    classification: str
+    density: str | None = None
+    birads: str | None = None
+    abnormality: str | None = None
+    molecular_subtype: str | None = None
+    subject_age: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class BreastCrop:
-    """Resultado geométrico de la detección de la caja mamaria. Con ella y el PNG
-    se puede reconstruir cualquier coordenada del original sin volver a descargar
-    el DICOM."""
+class CajaMamaria:
+    """La caja en coordenadas de la imagen de `Preprocessed_Dataset`, con el
+    margen ya aplicado y recortada a los límites de la imagen."""
 
-    x0_orig: int
-    y0_orig: int
-    x1_orig: int
-    y1_orig: int
+    x0: int
+    y0: int
+    x1: int
+    y1: int
     margin_px: int
-    otsu_threshold: float
-    source_height: int
-    source_width: int
-    crop_height: int
-    crop_width: int
+    source: BoxSource
+    threshold: float
+    image_height: int
+    image_width: int
     area_ratio: float
-    scale: float = 1.0
 
     def __post_init__(self) -> None:
-        if not (0 <= self.x0_orig < self.x1_orig <= self.source_width):
+        if not (0 <= self.x0 < self.x1 <= self.image_width):
             raise ValueError(
-                "BreastCrop inválido: "
-                f"0 <= x0_orig({self.x0_orig}) < x1_orig({self.x1_orig}) "
-                f"<= source_width({self.source_width}) no se cumple"
+                "CajaMamaria inválida: "
+                f"0 <= x0({self.x0}) < x1({self.x1}) <= image_width"
+                f"({self.image_width}) no se cumple"
             )
-        if not (0 <= self.y0_orig < self.y1_orig <= self.source_height):
+        if not (0 <= self.y0 < self.y1 <= self.image_height):
             raise ValueError(
-                "BreastCrop inválido: "
-                f"0 <= y0_orig({self.y0_orig}) < y1_orig({self.y1_orig}) "
-                f"<= source_height({self.source_height}) no se cumple"
-            )
-        if self.crop_width != self.x1_orig - self.x0_orig:
-            raise ValueError(
-                f"crop_width({self.crop_width}) != "
-                f"x1_orig - x0_orig({self.x1_orig - self.x0_orig})"
-            )
-        if self.crop_height != self.y1_orig - self.y0_orig:
-            raise ValueError(
-                f"crop_height({self.crop_height}) != "
-                f"y1_orig - y0_orig({self.y1_orig - self.y0_orig})"
+                "CajaMamaria inválida: "
+                f"0 <= y0({self.y0}) < y1({self.y1}) <= image_height"
+                f"({self.image_height}) no se cumple"
             )
 
 
 @dataclass(frozen=True, slots=True)
 class BoundingBox:
-    """Caja genérica con el espacio de referencia explícito. Se usa tanto para la
-    caja mamaria como para los hallazgos."""
+    """Caja genérica con el espacio de referencia explícito (`geometry.py`,
+    conservado de 001 para trasladar coordenadas cuando haga falta)."""
 
     x0: float
     y0: float
@@ -91,93 +91,37 @@ class BoundingBox:
 
 
 @dataclass(frozen=True, slots=True)
-class ProcessOutcome:
-    """Lo que un worker devuelve al proceso principal tras procesar un DICOM."""
+class RegistroDeRecorte:
+    """Lo que un trabajador devuelve; acaba siendo una fila de `catalog.parquet`
+    (sin `split`, que se incorpora al consolidar)."""
 
-    status: Literal["ok", "failed"]
-    process_seconds: float
-    breast_crop: BreastCrop | None = None
-    photometric_interpretation: str | None = None
-    transfer_syntax_uid: str | None = None
-    window_center: float | None = None
-    window_width: float | None = None
-    pixel_spacing: tuple[float, float] | None = None
-    manufacturer: str | None = None
-    model_name: str | None = None
-    normalize_low: float | None = None
-    normalize_high: float | None = None
-    inverted_monochrome1: bool = False
-    png_path: str | None = None
-    png_bytes: int | None = None
-    png_sha256: str | None = None
-    failure_category: FailureCategory | None = None
-    error_message: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ImageRecord:
-    """La fila del catálogo (una línea de `images.jsonl`): une ImageTask,
-    ProcessOutcome, procedencia técnica y resultado de la ejecución."""
-
-    study_id: str
-    series_id: str
     image_id: str
-    status: Literal["ok", "failed"]
-    split: str
+    source_dataset: str
+    source_subject_id: str
+    patient_key: str
     laterality: str
-    view_position: str
-    breast_birads: str
-    breast_density: str
-    run_id: str
-    pipeline_version: str
-    processed_at: str
-    download_seconds: float
+    view: str
+    status: Literal["ok", "failed"]
     process_seconds: float
-    dicom_bytes: int
-    breast_crop: BreastCrop | None = None
-    photometric_interpretation: str | None = None
-    transfer_syntax_uid: str | None = None
-    window_center: float | None = None
-    window_width: float | None = None
-    pixel_spacing: tuple[float, float] | None = None
-    manufacturer: str | None = None
-    model_name: str | None = None
-    normalize_low: float | None = None
-    normalize_high: float | None = None
-    inverted_monochrome1: bool = False
-    png_path: str | None = None
-    png_bytes: int | None = None
-    png_sha256: str | None = None
+    run_id: str
+    code_version: str
+    processed_at: str
+    box: CajaMamaria | None = None
+    fallback_reason: FallbackReason | None = None
+    mask_area_ratio: float | None = None
+    mask_otsu_iou: float | None = None
+    suspect: bool = False
+    suspect_reason: str | None = None
+    crop_path: str | None = None
+    crop_bytes: int | None = None
+    classification: str | None = None
+    density: str | None = None
+    birads: str | None = None
+    abnormality: str | None = None
+    molecular_subtype: str | None = None
+    subject_age: str | None = None
     failure_category: FailureCategory | None = None
     error_message: str | None = None
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class DicomPayload:
-    """Píxeles en su tipo nativo y cabeceras de procedencia leídas de un DICOM.
-    `eq=False` porque comparar arrays de numpy con `==` no devuelve un booleano
-    simple."""
-
-    pixels: np.ndarray
-    rows: int
-    columns: int
-    photometric_interpretation: str
-    transfer_syntax_uid: str
-    window_center: float | None
-    window_width: float | None
-    pixel_spacing: tuple[float, float] | None
-    manufacturer: str | None
-    model_name: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class DownloadResult:
-    """Resultado de una descarga individual de DICOM."""
-
-    status: Literal["downloaded", "already_exists"]
-    dicom_path: Path
-    bytes_downloaded: int
-    download_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,17 +132,46 @@ class RunSummary:
     started_at: str
     finished_at: str
     command: str
-    pipeline_version: str
-    split: str | None
-    n_studies: int | None
-    downloads: int
-    workers: int
-    queue_size: int
-    margin_px: int
-    images_total: int
-    images_ok: int
-    images_failed: int
+    code_version: str
+    seed: int
+    n_total: int
+    n_ok: int
+    n_failed: int
     failures_by_category: dict[FailureCategory, int]
-    bytes_downloaded: int
-    bytes_written: int
+    n_fallback_otsu: int
     exit_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class BoxingParams:
+    """Parámetros de `boxing.py` (D-01): umbral de la máscara, margen y la
+    política de respaldo a Otsu."""
+
+    mask_threshold: int = 128
+    margin_px: int = 25
+    blur_kernel: int = 5
+    close_kernel_ratio: float = 0.006
+    mask_area_ratio_min: float = 0.02
+    mask_area_ratio_max: float = 0.99
+
+
+@dataclass(frozen=True, slots=True)
+class QualityParams:
+    """Parámetros de `quality.py`: rangos que marcan un recorte como
+    sospechoso."""
+
+    suspect_area_ratio_min: float = 0.10
+    suspect_area_ratio_max: float = 0.98
+    suspect_aspect_ratio_min: float = 0.2
+    suspect_aspect_ratio_max: float = 5.0
+    suspect_iou_threshold: float = 0.3
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ImageMaskPayload:
+    """Píxeles de imagen y máscara (o `None` si la máscara no existe) en
+    escala de grises, `uint8`. `eq=False` porque comparar arrays de numpy con
+    `==` no devuelve un booleano simple."""
+
+    image: np.ndarray
+    mask: np.ndarray | None

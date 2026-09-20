@@ -1,95 +1,82 @@
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
 from time import perf_counter
 
-import numpy as np
-
-from mammo_lejepa.config import PipelineConfig
-from mammo_lejepa.dicom_io import read_dicom
-from mammo_lejepa.errors import DecodeError, classify_exception
+from mammo_lejepa.boxing import box_iou, mask_area_ratio, resolve_box
+from mammo_lejepa.config import CorpusConfig
+from mammo_lejepa.errors import classify_exception
 from mammo_lejepa.geometry import crop_image
-from mammo_lejepa.models import ImageTask, ProcessOutcome
-from mammo_lejepa.segmentation import detect_breast_box
+from mammo_lejepa.image_io import read_grayscale, read_mask
+from mammo_lejepa.models import ImagenMammoBench, RegistroDeRecorte
 from mammo_lejepa.storage import write_png_atomic
-from mammo_lejepa.windowing import apply_display_window, normalize_to_uint8
 
 
-def process_dicom(
-    task: ImageTask, dicom_path: Path, config: PipelineConfig
-) -> ProcessOutcome:
-    """Encadena lectura, ventana, normalización, detección, recorte y
-    escritura del PNG. Nunca lanza excepciones al proceso padre: cualquier
-    fallo se captura y se devuelve como un `ProcessOutcome` fallido con su
-    categoría y su traza (contrato de `worker.py`)."""
+def process_image(image: ImagenMammoBench, config: CorpusConfig) -> RegistroDeRecorte:
+    """Lee imagen y máscara, resuelve la caja mamaria (máscara u Otsu de
+    respaldo, D-01), recorta y escribe el PNG de forma atómica. Nunca lanza
+    excepciones al proceso padre: cualquier fallo se captura y se devuelve
+    como un `RegistroDeRecorte` fallido con su categoría. `run_id`,
+    `code_version` y `processed_at` quedan vacíos: el escritor único
+    (`runner.py`) los añade antes de persistir, igual que en 001."""
     start = perf_counter()
 
     try:
-        payload = read_dicom(dicom_path)
+        pixels = read_grayscale(config.mammobench_root / image.preprocessed_path)
+        mask_pixels = read_mask(config.mammobench_root / image.mask_path)
 
-        if (
-            payload.rows != task.expected_height
-            or payload.columns != task.expected_width
-        ):
-            # Discrepancia CSV vs. DICOM real: se registra como fallo, nunca
-            # se corrige en silencio (data-model.md, notas sobre las fuentes).
-            raise DecodeError(
-                f"Dimensiones declaradas ({task.expected_height}x"
-                f"{task.expected_width}) no coinciden con las reales del "
-                f"DICOM ({payload.rows}x{payload.columns})."
-            )
-
-        windowed = apply_display_window(
-            payload.pixels,
-            window_center=payload.window_center,
-            window_width=payload.window_width,
-            photometric_interpretation=payload.photometric_interpretation,
-        )
-        normalized, normalize_low, normalize_high = normalize_to_uint8(
-            windowed,
-            low_percentile=config.low_percentile,
-            high_percentile=config.high_percentile,
+        chosen_box, otsu_box, fallback_reason = resolve_box(
+            pixels, mask_pixels, config=config.boxing
         )
 
-        crop = detect_breast_box(
-            normalized,
-            margin_px=config.margin_px,
-            blur_kernel=config.blur_kernel,
-            close_kernel_ratio=config.close_kernel_ratio,
+        mask_ratio = (
+            mask_area_ratio(mask_pixels, threshold=config.boxing.mask_threshold)
+            if mask_pixels is not None
+            else None
         )
-        cropped_image = crop_image(normalized, crop)
+        mask_otsu_iou = box_iou(chosen_box, otsu_box) if otsu_box is not None else None
 
-        destination = config.processed_dir / task.study_id / f"{task.image_id}.png"
-        png_bytes = write_png_atomic(cropped_image, destination)
-        png_sha256 = _sha256_of_array(cropped_image)
+        cropped = crop_image(pixels, chosen_box)
+        destination = config.crop_path(image.source_dataset, image.image_id)
+        crop_bytes = write_png_atomic(cropped, destination)
 
-        return ProcessOutcome(
+        return RegistroDeRecorte(
+            image_id=image.image_id,
+            source_dataset=image.source_dataset,
+            source_subject_id=image.source_subject_id,
+            patient_key=image.patient_key,
+            laterality=image.laterality,
+            view=image.view,
             status="ok",
             process_seconds=perf_counter() - start,
-            breast_crop=crop,
-            photometric_interpretation=payload.photometric_interpretation,
-            transfer_syntax_uid=payload.transfer_syntax_uid,
-            window_center=payload.window_center,
-            window_width=payload.window_width,
-            pixel_spacing=payload.pixel_spacing,
-            manufacturer=payload.manufacturer,
-            model_name=payload.model_name,
-            normalize_low=normalize_low,
-            normalize_high=normalize_high,
-            inverted_monochrome1=payload.photometric_interpretation == "MONOCHROME1",
-            png_path=str(destination),
-            png_bytes=png_bytes,
-            png_sha256=png_sha256,
+            run_id="",
+            code_version="",
+            processed_at="",
+            box=chosen_box,
+            fallback_reason=fallback_reason,
+            mask_area_ratio=mask_ratio,
+            mask_otsu_iou=mask_otsu_iou,
+            crop_path=str(destination),
+            crop_bytes=crop_bytes,
+            classification=image.classification,
+            density=image.density,
+            birads=image.birads,
+            abnormality=image.abnormality,
+            molecular_subtype=image.molecular_subtype,
+            subject_age=image.subject_age,
         )
     except Exception as error:  # contrato: nunca propaga al proceso padre
-        return ProcessOutcome(
+        return RegistroDeRecorte(
+            image_id=image.image_id,
+            source_dataset=image.source_dataset,
+            source_subject_id=image.source_subject_id,
+            patient_key=image.patient_key,
+            laterality=image.laterality,
+            view=image.view,
             status="failed",
             process_seconds=perf_counter() - start,
+            run_id="",
+            code_version="",
+            processed_at="",
             failure_category=classify_exception(error),
             error_message=str(error)[:2000],
         )
-
-
-def _sha256_of_array(image: np.ndarray) -> str:
-    return hashlib.sha256(image.tobytes()).hexdigest()

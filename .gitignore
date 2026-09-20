@@ -10,8 +10,14 @@ wheels/
 .venv
 .env
 
-# Datos VinDr-Mammo: CSV de anotaciones, DICOM, PNG y catálogo derivados.
-# Constitución ("Restricciones del dominio"): datos clínicos bajo licencia
-# PhysioNet, "data/" queda fuera del control de versiones por completo.
+# Datos Mammo-Bench y derivados: CSV, imágenes, máscaras, PNG y catálogo.
+# Constitución ("Restricciones del dominio"): datos clínicos agregados de seis
+# fuentes públicas, "data/" queda fuera del control de versiones por completo.
 data/
 *.part
+
+# Entrenamiento (feature 003): checkpoints y directorios de ejecución.
+runs/
+checkpoints/
+*.ckpt
+claude_resume.txt

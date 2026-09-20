@@ -9,19 +9,18 @@ from mammo_lejepa.geometry import (
     to_crop_space,
     to_original_space,
 )
-from mammo_lejepa.models import BoundingBox, BreastCrop
+from mammo_lejepa.models import BoundingBox, BoxSource, CajaMamaria
 
-CROP = BreastCrop(
-    x0_orig=50,
-    y0_orig=60,
-    x1_orig=250,
-    y1_orig=260,
+CROP = CajaMamaria(
+    x0=50,
+    y0=60,
+    x1=250,
+    y1=260,
     margin_px=25,
-    otsu_threshold=100.0,
-    source_height=400,
-    source_width=400,
-    crop_height=200,
-    crop_width=200,
+    source=BoxSource.OTSU,
+    threshold=100.0,
+    image_height=400,
+    image_width=400,
     area_ratio=0.25,
 )
 
@@ -95,4 +94,4 @@ def test_crop_image_returns_exactly_crop_height_and_width() -> None:
 
     cropped = crop_image(image, CROP)
 
-    assert cropped.shape == (CROP.crop_height, CROP.crop_width)
+    assert cropped.shape == (CROP.y1 - CROP.y0, CROP.x1 - CROP.x0)
