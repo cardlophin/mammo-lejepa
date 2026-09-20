@@ -21,3 +21,4 @@ runs/
 checkpoints/
 *.ckpt
 claude_resume.txt
+.DS_Store
